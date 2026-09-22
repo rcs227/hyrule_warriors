@@ -4,6 +4,16 @@ Our team aims to create a deep learning model that can take human humming as an 
 
 We want to make a model that can be used in a similar way so that a user can hum into their microphone and have a transcribed series of notes instantaneously.
 
+## Required dependencies
+### Install with pip
+Use pip to install the following packages (see command below)
+```
+pip install <PACKAGE_NAME>
+```
+* huggingface_hub
+* remotezip
+* pretty_midi
+
 
 ## Data Collection
 ### HumTrans
