@@ -6,13 +6,34 @@ We want to make a model that can be used in a similar way so that a user can hum
 
 ## Required dependencies
 ### Install with pip
-Use pip to install the following packages (see command below)
+Use pip to install the following packages
+
+#### Data Collection
+* huggingface_hub (for HumTrans dataset)
 ```
-pip install <PACKAGE_NAME>
+pip install huggingface_hub
 ```
-* huggingface_hub
 * remotezip
+```
+pip install remotezip
+```
 * pretty_midi
+```
+pip install pretty_midi
+```
+* librosa (for spectrogram creation)
+```
+pip install librosa
+```
+#### Math
+* numpy
+```
+pip install numpy
+```
+* scipy
+```
+pip install scipy
+```
 
 
 ## Data Collection
