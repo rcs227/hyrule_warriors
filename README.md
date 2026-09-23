@@ -39,3 +39,6 @@ pip install scipy
 ## Data Collection
 ### HumTrans
 In `./raw_data/HumTrans/test/` is `extraction.ipynb`. This is a sample notebook that shows the process of downloading humming `.wav` files and their associated MIDI files. There are also two example files `one_hum.wav` and `one_midi.wav`.
+
+### Hum Generation
+In `./raw_data/Librosa/test/` is `librosa_hum_demo.ipynb`, a demo program showcasing how we can use NumPy and SciPy to generate audio waves. From those audio waves, we can use Librosa to create a spectrogram representation of that audio wave to feed our model. There is also a sound file created at the end so we can hear what the generated hum sounds like.
