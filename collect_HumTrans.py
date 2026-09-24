@@ -102,7 +102,7 @@ with RemoteZip(WAV_ZIP_URL, timeout=30) as archive:
     ]
 
     for index, member in enumerate(wav_members, start=1):
-        relative_output = Path(*PurePosixPath(member).parts).with_suffix(".npz")
+        relative_output = Path(PurePosixPath(member).name).with_suffix(".npz")
         output_path = OUTPUT_DIR / relative_output
 
         if output_path.exists():
