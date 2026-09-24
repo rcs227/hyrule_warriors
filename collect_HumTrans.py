@@ -8,7 +8,7 @@ from remotezip import RemoteZip
 
 
 # Settings to change
-OUTPUT_DIR = Path("/processed_data/HumTrans/features")
+OUTPUT_DIR = Path(__file__).resolve().parent / "processed_data" / "HumTrans" / "features"
 MAX_OUTPUT_GB = .013
 FEATURE = "both"  # "logmel", "cqt", or "both"
 
@@ -117,6 +117,10 @@ with RemoteZip(WAV_ZIP_URL, timeout=30) as archive:
         except Exception as exc:
             print(f"Skipped {member}: {exc}")
             continue
+
+        print("Output folder:", OUTPUT_DIR.resolve())
+        print("Existing NPZ bytes:", existing_output_size())
+        print("Storage cap bytes:", MAX_OUTPUT_BYTES)
 
         if used_bytes + len(npz_bytes) > MAX_OUTPUT_BYTES:
             print("Storage limit reached; stopping before saving this file.")
