@@ -1,0 +1,14 @@
+# Data collection
+huggingface_hub
+remotezip
+pretty_midi
+librosa
+
+# Math / plotting
+numpy
+scipy
+matplotlib
+
+# Modelling and evaluation
+torch
+mir_eval

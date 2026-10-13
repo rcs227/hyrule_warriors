@@ -1,2 +1,4 @@
 *.npz
 raw_data/MIR-QBSH/MIR-QBSH.zip
+
+.venv/
