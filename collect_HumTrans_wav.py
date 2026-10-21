@@ -1,138 +1,119 @@
-from io import BytesIO
-from pathlib import Path, PurePosixPath
-import json
+"""Download HumTrans hums and save their CQT features.
 
-import librosa
-import numpy as np
+Streams each WAV from the HumTrans ZIP on Hugging Face (nothing else is
+downloaded), computes the CQT defined in features.py plus a pYIN pitch track
+(used only to align the labels), and saves both to
+processed_data/HumTrans/features/<clip>.npz.
+
+Clips are picked by split so a subset is still a fair sample, e.g. the whole
+validation and test sets plus a random part of the training set. Re-running
+skips clips that are already saved, so an interrupted run can be resumed.
+
+Usage:
+    python collect_HumTrans_wav.py --splits valid test train --train-limit 6000
+    python collect_HumTrans_wav.py --splits train            # every train clip
+"""
+import argparse
+import random
+from concurrent.futures import ProcessPoolExecutor, as_completed
+from pathlib import Path, PurePosixPath
+
 from remotezip import RemoteZip
 
+from features import (compute_cqt, compute_pitch_track, features_to_npz_bytes,
+                      load_audio)
+from splits import load_split_keys
 
-# Settings to change
+
 OUTPUT_DIR = Path(__file__).resolve().parent / "processed_data" / "HumTrans" / "features"
-MAX_OUTPUT_GB = .013
-FEATURE = "both"  # "logmel", "cqt", or "both"
-
 WAV_ZIP_URL = (
     "https://huggingface.co/datasets/dadinghh2/HumTrans/"
     "resolve/main/all_wav.zip"
 )
 
-SAMPLE_RATE = 16_000
-HOP_LENGTH = 160       # 10 ms
-N_FFT = 1024
-N_MELS = 128
-
-MAX_OUTPUT_BYTES = int(MAX_OUTPUT_GB * 1_000_000_000)
+_archive = None   # one open RemoteZip per worker process
 
 
-def make_npz(wav_bytes, member_name):
-    """Convert one in-memory WAV to a compressed NPZ byte string."""
-    y, sr = librosa.load(BytesIO(wav_bytes), sr=SAMPLE_RATE, mono=True)
-
-    if y.size == 0:
-        raise ValueError("WAV contained no audio samples")
-
-    arrays = {}
-
-    if FEATURE in ("logmel", "both"):
-        mel_power = librosa.feature.melspectrogram(
-            y=y,
-            sr=sr,
-            n_fft=N_FFT,
-            hop_length=HOP_LENGTH,
-            n_mels=N_MELS,
-            fmin=50,
-            fmax=sr / 2,
-            power=2.0,
-        )
-        arrays["log_mel_db"] = librosa.power_to_db(
-            mel_power, ref=np.max
-        ).astype(np.float32)
-
-    if FEATURE in ("cqt", "both"):
-        cqt = librosa.cqt(
-            y=y,
-            sr=sr,
-            hop_length=HOP_LENGTH,
-            fmin=librosa.note_to_hz("C1"),
-            n_bins=84,
-            bins_per_octave=12,
-        )
-        arrays["cqt_log_magnitude"] = np.log1p(
-            np.abs(cqt)
-        ).astype(np.float32)
-
-    first_feature = next(iter(arrays.values()))
-    frame_times_s = (
-        np.arange(first_feature.shape[1], dtype=np.float32)
-        * HOP_LENGTH / sr
-    )
-
-    metadata = {
-        "source_member": member_name,
-        "sample_rate": sr,
-        "hop_length": HOP_LENGTH,
-        "feature": FEATURE,
-    }
-
-    buffer = BytesIO()
-    np.savez_compressed(
-        buffer,
-        **arrays,
-        frame_times_s=frame_times_s,
-        metadata_json=np.array(json.dumps(metadata)),
-    )
-    return buffer.getvalue()
+def _open_archive():
+    global _archive
+    _archive = RemoteZip(WAV_ZIP_URL, timeout=60)
 
 
-def existing_output_size():
-    return sum(p.stat().st_size for p in OUTPUT_DIR.rglob("*.npz"))
+def process_clip(member):
+    """Download one WAV and return (clip name, .npz bytes)."""
+    y = load_audio(_archive.read(member))
+    cqt = compute_cqt(y)
+    pitch_track = compute_pitch_track(y, cqt.shape[1])
+    return (PurePosixPath(member).stem,
+            features_to_npz_bytes(cqt, member, pitch_track))
 
 
-OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-used_bytes = existing_output_size()
+def choose_clips(splits, train_limit, seed):
+    keys = load_split_keys()
+    clips = []
+    for split in splits:
+        stems = keys[split]
+        if split == "train" and train_limit:
+            stems = random.Random(seed).sample(stems, min(train_limit, len(stems)))
+        clips.extend(stems)
+    return clips
 
-if used_bytes >= MAX_OUTPUT_BYTES:
-    raise SystemExit("Output folder is already at or above the storage limit.")
 
-with RemoteZip(WAV_ZIP_URL, timeout=30) as archive:
-    wav_members = [
-        name for name in archive.namelist()
-        if name.lower().endswith(".wav")
-    ]
+def main():
+    parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
+    parser.add_argument("--splits", nargs="+", default=["valid", "test", "train"],
+                        choices=["train", "valid", "test"])
+    parser.add_argument("--train-limit", type=int, default=6000,
+                        help="random train clips to keep (0 = all 13080)")
+    parser.add_argument("--max-gb", type=float, default=5.0,
+                        help="stop once the features folder reaches this size")
+    parser.add_argument("--workers", type=int, default=6)
+    parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument("--output-dir", type=Path, default=OUTPUT_DIR)
+    args = parser.parse_args()
 
-    for index, member in enumerate(wav_members, start=1):
-        relative_output = Path(PurePosixPath(member).name).with_suffix(".npz")
-        output_path = OUTPUT_DIR / relative_output
+    args.output_dir.mkdir(parents=True, exist_ok=True)
+    max_bytes = int(args.max_gb * 1e9)
+    used_bytes = sum(p.stat().st_size for p in args.output_dir.glob("*.npz"))
 
-        if output_path.exists():
-            print(f"Skipping existing: {output_path}")
-            continue
+    with RemoteZip(WAV_ZIP_URL, timeout=60) as archive:
+        members = {PurePosixPath(n).stem: n for n in archive.namelist()
+                   if n.lower().endswith(".wav")}
 
-        print(f"[{index}/{len(wav_members)}] Processing {member}")
+    wanted = choose_clips(args.splits, args.train_limit, args.seed)
+    todo = [members[s] for s in wanted
+            if s in members and not (args.output_dir / f"{s}.npz").exists()]
+    print(f"{len(wanted)} clips chosen, {len(wanted) - len(todo)} already saved, "
+          f"{len(todo)} to process ({used_bytes / 1e9:.2f} / {args.max_gb} GB used)")
 
-        try:
-            wav_bytes = archive.read(member)
-            npz_bytes = make_npz(wav_bytes, member)
-        except Exception as exc:
-            print(f"Skipped {member}: {exc}")
-            continue
+    saved, errors = 0, []
+    with ProcessPoolExecutor(args.workers, initializer=_open_archive) as pool:
+        futures = {pool.submit(process_clip, m): m for m in todo}
+        for index, future in enumerate(as_completed(futures), start=1):
+            member = futures[future]
+            try:
+                stem, npz_bytes = future.result()
+            except Exception as exc:
+                errors.append((member, str(exc)))
+                print(f"[{index}/{len(todo)}] Skipped {member}: {exc}")
+                continue
 
-        print("Output folder:", OUTPUT_DIR.resolve())
-        print("Existing NPZ bytes:", existing_output_size())
-        print("Storage cap bytes:", MAX_OUTPUT_BYTES)
+            if used_bytes + len(npz_bytes) > max_bytes:
+                print("Storage limit reached; stopping.")
+                for f in futures:
+                    f.cancel()
+                break
 
-        if used_bytes + len(npz_bytes) > MAX_OUTPUT_BYTES:
-            print("Storage limit reached; stopping before saving this file.")
-            break
+            (args.output_dir / f"{stem}.npz").write_bytes(npz_bytes)
+            used_bytes += len(npz_bytes)
+            saved += 1
+            if index % 100 == 0 or index == len(todo):
+                print(f"[{index}/{len(todo)}] {used_bytes / 1e9:.2f} GB used")
 
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-        output_path.write_bytes(npz_bytes)
-        used_bytes += len(npz_bytes)
+    print(f"\nSaved {saved} clips to {args.output_dir}")
+    if errors:
+        print(f"{len(errors)} clip(s) failed; re-run to retry them.")
 
-        print(
-            f"Saved {output_path} "
-            f"({used_bytes / 1_000_000_000:.3f} / {MAX_OUTPUT_GB:.3f} GB)"
-        )
 
-print("Finished.")
+if __name__ == "__main__":
+    main()

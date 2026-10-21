@@ -7,7 +7,9 @@ The HumTrans MIDI labels are not perfectly aligned with the humming:
   * Octave: many singers (mostly the men) hum one octave away from the MIDI.
   * Lag: the singer starts each note late by a roughly constant amount per
     clip (usually 40-250 ms, up to ~1 s for some singers).
-Both are estimated per clip from the CQT and applied to the labels. The
+Both are estimated per clip by comparing the hummed pitch (the pYIN track
+saved with the features, or the CQT for older files) with the MIDI, and
+applied to the labels. The
 alignment score is saved so badly aligned clips can be filtered out later.
 
 Usage:
@@ -22,7 +24,7 @@ from pathlib import Path
 import numpy as np
 
 from features import (BINS_PER_SEMITONE, CQT_FMIN_MIDI, FRAME_S, bin_to_midi,
-                      load_cqt, midi_to_bin)
+                      load_cqt, load_pitch_track, midi_to_bin)
 
 
 PROJECT_DIR = Path(__file__).resolve().parent
@@ -33,6 +35,7 @@ ALIGNMENT_CSV = PROJECT_DIR / "processed_data" / "HumTrans" / "alignment.csv"
 
 HUM_RANGE = (36, 84)     # C2-C6: where we look for the hummed pitch
 LAG_RANGE_S = (-0.2, 2.0)
+OCTAVE_SHIFTS = (-24, -12, 0, 12)
 
 
 def load_notes(csv_path=NOTES_CSV):
@@ -100,25 +103,29 @@ def estimate_alignment(hum_pitch, notes):
     ref, _, _ = notes_to_frames(notes, n)
     ref = np.where(ref > 0, ref, np.nan).astype(float)
 
-    both = ~np.isnan(hum_pitch) & ~np.isnan(ref)
-    if not both.any():
+    # Divide by the whole clip, not just the overlap, so a lag that leaves
+    # only a sliver of overlap cannot score well.
+    total = min(np.count_nonzero(~np.isnan(hum_pitch)),
+                np.count_nonzero(~np.isnan(ref)))
+    if total == 0:
         return 0, 0.0, 0.0
-    octave_shift = 12 * int(round(np.median(hum_pitch[both] - ref[both]) / 12))
 
-    def score(lag_frames):
+    def score(octave_shift, lag_frames):
         shifted = np.full(n, np.nan)
         if lag_frames >= 0:
             shifted[:n - lag_frames] = hum_pitch[lag_frames:]
         else:
             shifted[-lag_frames:] = hum_pitch[:lag_frames]
         ok = ~np.isnan(shifted) & ~np.isnan(ref)
-        if not ok.any():
-            return 0.0
-        return float(np.mean(np.abs(shifted[ok] - octave_shift - ref[ok]) < 0.5))
+        return float(np.sum(np.abs(shifted[ok] - octave_shift - ref[ok]) < 0.5)) / total
 
+    # Octave and lag are searched together: with a long lag, comparing the
+    # unshifted hum to the labels says little about the octave.
     lags = range(int(LAG_RANGE_S[0] / FRAME_S), int(LAG_RANGE_S[1] / FRAME_S) + 1)
-    best_lag = max(lags, key=score)
-    return octave_shift, best_lag * FRAME_S, score(best_lag)
+    best = max(((score(shift, lag), -abs(shift), shift, lag)
+                for shift in OCTAVE_SHIFTS for lag in lags))
+    best_score, _, octave_shift, lag_frames = best
+    return octave_shift, lag_frames * FRAME_S, best_score
 
 
 def plot_clip(stem, labels_path, features_path, out_path):
@@ -181,9 +188,12 @@ def main():
 
         cqt = load_cqt(path)
         notes = all_notes[stem]
-        octave_shift, lag_s, align_score = estimate_alignment(
-            cqt_pitch_track(cqt), notes
-        )
+        # Prefer the saved pYIN track; older feature files only have the CQT.
+        hum_pitch = load_pitch_track(path)
+        pitch_source = "pyin"
+        if hum_pitch is None:
+            hum_pitch, pitch_source = cqt_pitch_track(cqt), "cqt"
+        octave_shift, lag_s, align_score = estimate_alignment(hum_pitch, notes)
         pitch, onset, offset = notes_to_frames(
             notes, cqt.shape[1], octave_shift, lag_s
         )
@@ -194,14 +204,15 @@ def main():
             octave_shift=octave_shift, lag_s=lag_s, align_score=align_score,
         )
         rows.append({"clip": stem, "octave_shift": octave_shift,
-                     "lag_s": f"{lag_s:.2f}", "align_score": f"{align_score:.3f}"})
+                     "lag_s": f"{lag_s:.2f}", "align_score": f"{align_score:.3f}",
+                     "pitch_source": pitch_source})
         print(f"[{index}/{len(feature_files)}] {stem}: shift={octave_shift:+d} "
               f"lag={lag_s:.2f}s score={align_score:.2f}")
 
     with open(args.labels_dir.parent / ALIGNMENT_CSV.name, "w", newline="",
               encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=["clip", "octave_shift", "lag_s",
-                                               "align_score"])
+                                               "align_score", "pitch_source"])
         writer.writeheader()
         writer.writerows(rows)
 

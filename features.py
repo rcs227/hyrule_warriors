@@ -22,6 +22,7 @@ N_OCTAVES = 5
 N_BINS = 12 * BINS_PER_SEMITONE * N_OCTAVES   # 180
 
 FEATURE_KEY = "cqt_log_magnitude"
+PITCH_KEY = "pyin_midi"
 
 
 def load_audio(source):
@@ -47,6 +48,21 @@ def compute_cqt(y):
     return np.log1p(np.abs(cqt)).astype(np.float16)
 
 
+def compute_pitch_track(y, n_frames):
+    """pYIN pitch in MIDI numbers per frame (NaN when not hummed).
+
+    Only used to align the labels (build_labels.py); the model never sees it.
+    pYIN copes with a faint fundamental far better than reading the CQT,
+    which matters for low male voices.
+    """
+    f0, voiced, _ = librosa.pyin(y, sr=SAMPLE_RATE, fmin=60, fmax=1000,
+                                 hop_length=HOP_LENGTH)
+    midi = np.where(voiced, librosa.hz_to_midi(f0), np.nan)
+    midi = np.pad(midi[:n_frames], (0, max(0, n_frames - len(midi))),
+                  constant_values=np.nan)
+    return midi.astype(np.float16)
+
+
 def bin_to_midi(bins):
     return CQT_FMIN_MIDI + np.asarray(bins) / BINS_PER_SEMITONE
 
@@ -55,8 +71,8 @@ def midi_to_bin(midi):
     return np.round((np.asarray(midi) - CQT_FMIN_MIDI) * BINS_PER_SEMITONE).astype(int)
 
 
-def features_to_npz_bytes(cqt, source):
-    """Pack a CQT and its settings into compressed .npz bytes."""
+def features_to_npz_bytes(cqt, source, pitch_track=None):
+    """Pack a CQT (and optional pYIN track) into compressed .npz bytes."""
     metadata = {
         "source": source,
         "sample_rate": SAMPLE_RATE,
@@ -65,10 +81,21 @@ def features_to_npz_bytes(cqt, source):
         "bins_per_semitone": BINS_PER_SEMITONE,
         "n_bins": N_BINS,
     }
+    arrays = {FEATURE_KEY: cqt}
+    if pitch_track is not None:
+        arrays[PITCH_KEY] = pitch_track
     buffer = BytesIO()
-    np.savez_compressed(buffer, **{FEATURE_KEY: cqt},
+    np.savez_compressed(buffer, **arrays,
                         metadata_json=np.array(json.dumps(metadata)))
     return buffer.getvalue()
+
+
+def load_pitch_track(path):
+    """The saved pYIN track as float32, or None if the file has none."""
+    with np.load(path) as data:
+        if PITCH_KEY not in data.files:
+            return None
+        return data[PITCH_KEY].astype(np.float32)
 
 
 def load_cqt(path):
