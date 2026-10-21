@@ -21,6 +21,9 @@ from pathlib import Path
 
 import numpy as np
 
+from features import (BINS_PER_SEMITONE, CQT_FMIN_MIDI, FRAME_S, bin_to_midi,
+                      load_cqt, midi_to_bin)
+
 
 PROJECT_DIR = Path(__file__).resolve().parent
 FEATURES_DIR = PROJECT_DIR / "processed_data" / "HumTrans" / "features"
@@ -28,8 +31,6 @@ NOTES_CSV = PROJECT_DIR / "processed_data" / "HumTrans" / "midi_notes.csv"
 LABELS_DIR = PROJECT_DIR / "processed_data" / "HumTrans" / "labels"
 ALIGNMENT_CSV = PROJECT_DIR / "processed_data" / "HumTrans" / "alignment.csv"
 
-FRAME_S = 0.01           # 160-sample hop at 16 kHz
-CQT_MIDI_OFFSET = 24     # CQT bin 0 is C1 = MIDI 24, one bin per semitone
 HUM_RANGE = (36, 84)     # C2-C6: where we look for the hummed pitch
 LAG_RANGE_S = (-0.2, 2.0)
 
@@ -55,10 +56,11 @@ def cqt_pitch_track(cqt):
     """
     harmonic_sum = np.zeros_like(cqt)
     for semitones, weight in [(0, 1.0), (12, 0.8), (19, 0.6), (24, 0.4)]:
-        harmonic_sum[:cqt.shape[0] - semitones] += weight * cqt[semitones:]
+        shift = semitones * BINS_PER_SEMITONE
+        harmonic_sum[:cqt.shape[0] - shift] += weight * cqt[shift:]
 
-    lo, hi = (p - CQT_MIDI_OFFSET for p in HUM_RANGE)
-    pitch = lo + np.argmax(harmonic_sum[lo:hi], axis=0) + CQT_MIDI_OFFSET
+    lo, hi = midi_to_bin(HUM_RANGE)
+    pitch = bin_to_midi(lo + np.argmax(harmonic_sum[lo:hi], axis=0))
 
     energy = cqt.max(axis=0)
     floor = np.percentile(energy, 30)
@@ -124,15 +126,16 @@ def plot_clip(stem, labels_path, features_path, out_path):
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
 
-    cqt = np.load(features_path)["cqt_log_magnitude"]
+    cqt = load_cqt(features_path)
     labels = np.load(labels_path)
     pitch = np.where(labels["pitch"] > 0, labels["pitch"], np.nan)
     t = np.arange(cqt.shape[1]) * FRAME_S
 
+    half_bin = 0.5 / BINS_PER_SEMITONE
     fig, ax = plt.subplots(figsize=(16, 5))
     ax.imshow(cqt, origin="lower", aspect="auto", cmap="magma",
-              extent=[0, t[-1], CQT_MIDI_OFFSET - 0.5,
-                      CQT_MIDI_OFFSET + cqt.shape[0] - 0.5])
+              extent=[0, t[-1], CQT_FMIN_MIDI - half_bin,
+                      bin_to_midi(cqt.shape[0]) - half_bin])
     ax.plot(t, pitch, c="cyan", lw=2, label="aligned label")
     for x in t[labels["onset"] == 1]:
         ax.axvline(x, c="white", lw=0.5, alpha=0.6)
@@ -176,7 +179,7 @@ def main():
             print(f"[{index}/{len(feature_files)}] {stem}: no notes, skipped")
             continue
 
-        cqt = np.load(path)["cqt_log_magnitude"]
+        cqt = load_cqt(path)
         notes = all_notes[stem]
         octave_shift, lag_s, align_score = estimate_alignment(
             cqt_pitch_track(cqt), notes

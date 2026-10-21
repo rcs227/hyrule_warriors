@@ -12,3 +12,6 @@ matplotlib
 # Modelling and evaluation
 torch
 mir_eval
+
+# Testing
+pytest

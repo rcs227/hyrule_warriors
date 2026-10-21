@@ -49,22 +49,30 @@ def cqt_features(y, sr):
     return np.log1p(np.abs(cqt)).astype(np.float32)
 
 
+def frames_to_notes(midi, min_note_s=MIN_NOTE_S):
+    """Group runs of the same MIDI number (0 = silence) into notes.
+
+    Returns (intervals in seconds, MIDI pitches). Runs shorter than
+    min_note_s are dropped.
+    """
+    intervals, pitches = [], []
+    start = 0
+    for i in range(1, len(midi) + 1):
+        if i == len(midi) or midi[i] != midi[start]:
+            if midi[start] > 0 and (i - start) * FRAME_S >= min_note_s - 1e-9:
+                intervals.append((start * FRAME_S, i * FRAME_S))
+                pitches.append(midi[start])
+            start = i
+    return np.array(intervals).reshape(-1, 2), np.array(pitches)
+
+
 def transcribe(y, sr):
     """Return (intervals in seconds, MIDI pitches) for one hum."""
     f0, voiced, _ = librosa.pyin(y, sr=sr, fmin=60, fmax=1000,
                                  hop_length=HOP_LENGTH)
     midi = np.where(voiced, np.round(librosa.hz_to_midi(f0)), 0)
     midi = median_filter(midi, size=5)   # remove one-frame wobbles
-
-    intervals, pitches = [], []
-    start = 0
-    for i in range(1, len(midi) + 1):
-        if i == len(midi) or midi[i] != midi[start]:
-            if midi[start] > 0 and (i - start) * FRAME_S >= MIN_NOTE_S:
-                intervals.append((start * FRAME_S, i * FRAME_S))
-                pitches.append(midi[start])
-            start = i
-    return np.array(intervals).reshape(-1, 2), np.array(pitches)
+    return frames_to_notes(midi)
 
 
 def score_notes(ref_intervals, ref_pitches, est_intervals, est_pitches):
