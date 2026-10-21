@@ -13,5 +13,8 @@ matplotlib
 torch
 mir_eval
 
+# Live demo (microphone)
+sounddevice
+
 # Testing
 pytest
