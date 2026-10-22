@@ -1,21 +1,15 @@
-from io import BytesIO
-import json
 import re
 from pathlib import Path, PurePosixPath
 from zipfile import ZipFile
 
-import librosa
-import numpy as np
+from features import (compute_cqt, compute_pitch_track, features_to_npz_bytes,
+                      load_audio)
 
 
 PROJECT_DIR = Path(__file__).resolve().parent
 ZIP_PATH = PROJECT_DIR / "raw_data" / "MIR-QBSH" / "MIR-QBSH.zip"
 OUTPUT_DIR = PROJECT_DIR / "processed_data" / "MIR-QBSH" / "features"
 
-SAMPLE_RATE = 16_000
-HOP_LENGTH = 160       # 10 ms at 16 kHz
-N_FFT = 1024           # 64 ms window
-N_MELS = 128
 
 
 def get_recording_info(member):
@@ -45,64 +39,17 @@ def get_recording_info(member):
 
 
 def convert_wav(wav_bytes, source_member):
-    """Convert one WAV held in memory to log-mel and CQT arrays."""
-    y, sr = librosa.load(BytesIO(wav_bytes), sr=SAMPLE_RATE, mono=True)
+    """Convert one WAV held in memory to the shared CQT + pYIN features."""
+    y = load_audio(wav_bytes)
+    cqt = compute_cqt(y)
+    return features_to_npz_bytes(cqt, source_member,
+                                 compute_pitch_track(y, cqt.shape[1]))
 
-    if y.size == 0:
-        raise ValueError("WAV contains no audio samples")
 
-    mel_power = librosa.feature.melspectrogram(
-        y=y,
-        sr=sr,
-        n_fft=N_FFT,
-        hop_length=HOP_LENGTH,
-        n_mels=N_MELS,
-        fmin=50,
-        fmax=sr / 2,
-        power=2.0,
-    )
-    log_mel_db = librosa.power_to_db(
-        mel_power, ref=np.max
-    ).astype(np.float32)
-
-    cqt = librosa.cqt(
-        y=y,
-        sr=sr,
-        hop_length=HOP_LENGTH,
-        fmin=librosa.note_to_hz("C1"),
-        n_bins=84,             # C1 through B7
-        bins_per_octave=12,    # One bin per semitone
-    )
-    cqt_log_magnitude = np.log1p(
-        np.abs(cqt)
-    ).astype(np.float32)
-
-    n_frames = log_mel_db.shape[1]
-    frame_times_s = (
-        np.arange(n_frames, dtype=np.float32) * HOP_LENGTH / sr
-    )
-
-    metadata = {
-        "source_member": source_member,
-        "sample_rate": sr,
-        "hop_length_samples": HOP_LENGTH,
-        "frame_interval_seconds": HOP_LENGTH / sr,
-        "n_fft": N_FFT,
-        "n_mels": N_MELS,
-        "cqt_fmin": "C1",
-        "cqt_bins": 84,
-        "cqt_bins_per_octave": 12,
-    }
-
-    buffer = BytesIO()
-    np.savez_compressed(
-        buffer,
-        log_mel_db=log_mel_db,
-        cqt_log_magnitude=cqt_log_magnitude,
-        frame_times_s=frame_times_s,
-        metadata_json=np.array(json.dumps(metadata)),
-    )
-    return buffer.getvalue()
+def clip_name(member):
+    """Flat, unique name for one recording, e.g. year2003_person00001_00013."""
+    year_folder, person_id, song_id = get_recording_info(member)
+    return f"{year_folder}_{person_id}_{song_id}"
 
 
 def main():
@@ -124,8 +71,7 @@ def main():
         # silently overwrite another.
         destinations = {}
         for member in wav_members:
-            year_folder, person_id, song_id = get_recording_info(member)
-            output_path = OUTPUT_DIR / year_folder / person_id / f"{song_id}.npz"
+            output_path = OUTPUT_DIR / f"{clip_name(member)}.npz"
             destinations.setdefault(str(output_path), []).append(member)
 
         collisions = {
@@ -146,8 +92,7 @@ def main():
         errors = []
 
         for index, member in enumerate(wav_members, start=1):
-            year_folder, person_id, song_id = get_recording_info(member)
-            output_path = OUTPUT_DIR / year_folder / person_id / f"{song_id}.npz"
+            output_path = OUTPUT_DIR / f"{clip_name(member)}.npz"
 
             if output_path.exists():
                 print(f"[{index}/{len(wav_members)}] Skipping existing {output_path}")

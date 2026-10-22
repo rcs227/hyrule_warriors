@@ -7,7 +7,9 @@ The HumTrans MIDI labels are not perfectly aligned with the humming:
   * Octave: many singers (mostly the men) hum one octave away from the MIDI.
   * Lag: the singer starts each note late by a roughly constant amount per
     clip (usually 40-250 ms, up to ~1 s for some singers).
-Both are estimated per clip from the CQT and applied to the labels. The
+Both are estimated per clip by comparing the hummed pitch (the pYIN track
+saved with the features, or the CQT for older files) with the MIDI, and
+applied to the labels. The
 alignment score is saved so badly aligned clips can be filtered out later.
 
 Usage:
@@ -21,6 +23,9 @@ from pathlib import Path
 
 import numpy as np
 
+from features import (BINS_PER_SEMITONE, CQT_FMIN_MIDI, FRAME_S, bin_to_midi,
+                      load_cqt, load_pitch_track, midi_to_bin)
+
 
 PROJECT_DIR = Path(__file__).resolve().parent
 FEATURES_DIR = PROJECT_DIR / "processed_data" / "HumTrans" / "features"
@@ -28,10 +33,9 @@ NOTES_CSV = PROJECT_DIR / "processed_data" / "HumTrans" / "midi_notes.csv"
 LABELS_DIR = PROJECT_DIR / "processed_data" / "HumTrans" / "labels"
 ALIGNMENT_CSV = PROJECT_DIR / "processed_data" / "HumTrans" / "alignment.csv"
 
-FRAME_S = 0.01           # 160-sample hop at 16 kHz
-CQT_MIDI_OFFSET = 24     # CQT bin 0 is C1 = MIDI 24, one bin per semitone
 HUM_RANGE = (36, 84)     # C2-C6: where we look for the hummed pitch
 LAG_RANGE_S = (-0.2, 2.0)
+OCTAVE_SHIFTS = (-24, -12, 0, 12)
 
 
 def load_notes(csv_path=NOTES_CSV):
@@ -55,10 +59,11 @@ def cqt_pitch_track(cqt):
     """
     harmonic_sum = np.zeros_like(cqt)
     for semitones, weight in [(0, 1.0), (12, 0.8), (19, 0.6), (24, 0.4)]:
-        harmonic_sum[:cqt.shape[0] - semitones] += weight * cqt[semitones:]
+        shift = semitones * BINS_PER_SEMITONE
+        harmonic_sum[:cqt.shape[0] - shift] += weight * cqt[shift:]
 
-    lo, hi = (p - CQT_MIDI_OFFSET for p in HUM_RANGE)
-    pitch = lo + np.argmax(harmonic_sum[lo:hi], axis=0) + CQT_MIDI_OFFSET
+    lo, hi = midi_to_bin(HUM_RANGE)
+    pitch = bin_to_midi(lo + np.argmax(harmonic_sum[lo:hi], axis=0))
 
     energy = cqt.max(axis=0)
     floor = np.percentile(energy, 30)
@@ -91,32 +96,50 @@ def notes_to_frames(notes, n_frames, octave_shift=0, lag_s=0.0):
 def estimate_alignment(hum_pitch, notes):
     """Find the octave shift and lag that best match the hum to the notes.
 
-    The score is the fraction of frames (hummed and labelled) where the hum
-    is within half a semitone of the shifted label.
+    Returns (octave_shift, lag_s, align_score, tuning). The score is the
+    fraction of hummed frames within half a semitone of the shifted label,
+    after removing the singer's constant tuning offset (e.g. someone who
+    hums a third of a semitone flat throughout). Without that correction
+    the score would punish out-of-tune singers whose labels are correct.
     """
     n = len(hum_pitch)
     ref, _, _ = notes_to_frames(notes, n)
     ref = np.where(ref > 0, ref, np.nan).astype(float)
 
-    both = ~np.isnan(hum_pitch) & ~np.isnan(ref)
-    if not both.any():
-        return 0, 0.0, 0.0
-    octave_shift = 12 * int(round(np.median(hum_pitch[both] - ref[both]) / 12))
+    # Divide by the whole clip, not just the overlap, so a lag that leaves
+    # only a sliver of overlap cannot score well.
+    total = min(np.count_nonzero(~np.isnan(hum_pitch)),
+                np.count_nonzero(~np.isnan(ref)))
+    if total == 0:
+        return 0, 0.0, 0.0, 0.0
 
-    def score(lag_frames):
+    def differences(octave_shift, lag_frames):
+        """Hum minus shifted label, on frames where both exist."""
         shifted = np.full(n, np.nan)
         if lag_frames >= 0:
             shifted[:n - lag_frames] = hum_pitch[lag_frames:]
         else:
             shifted[-lag_frames:] = hum_pitch[:lag_frames]
         ok = ~np.isnan(shifted) & ~np.isnan(ref)
-        if not ok.any():
-            return 0.0
-        return float(np.mean(np.abs(shifted[ok] - octave_shift - ref[ok]) < 0.5))
+        return shifted[ok] - octave_shift - ref[ok]
 
+    def score(octave_shift, lag_frames, tuning=0.0):
+        d = differences(octave_shift, lag_frames)
+        return float(np.sum(np.abs(d - tuning) < 0.5)) / total
+
+    # Octave and lag are searched together: with a long lag, comparing the
+    # unshifted hum to the labels says little about the octave.
     lags = range(int(LAG_RANGE_S[0] / FRAME_S), int(LAG_RANGE_S[1] / FRAME_S) + 1)
-    best_lag = max(lags, key=score)
-    return octave_shift, best_lag * FRAME_S, score(best_lag)
+    _, _, octave_shift, lag_frames = max(
+        (score(shift, lag), -abs(shift), shift, lag)
+        for shift in OCTAVE_SHIFTS for lag in lags)
+
+    # Measure the singer's tuning from frames within a semitone of the label.
+    d = differences(octave_shift, lag_frames)
+    near = np.abs(d) < 1.0
+    tuning = float(np.median(d[near])) if near.any() else 0.0
+    return (octave_shift, lag_frames * FRAME_S,
+            score(octave_shift, lag_frames, tuning), tuning)
 
 
 def plot_clip(stem, labels_path, features_path, out_path):
@@ -124,15 +147,16 @@ def plot_clip(stem, labels_path, features_path, out_path):
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
 
-    cqt = np.load(features_path)["cqt_log_magnitude"]
+    cqt = load_cqt(features_path)
     labels = np.load(labels_path)
     pitch = np.where(labels["pitch"] > 0, labels["pitch"], np.nan)
     t = np.arange(cqt.shape[1]) * FRAME_S
 
+    half_bin = 0.5 / BINS_PER_SEMITONE
     fig, ax = plt.subplots(figsize=(16, 5))
     ax.imshow(cqt, origin="lower", aspect="auto", cmap="magma",
-              extent=[0, t[-1], CQT_MIDI_OFFSET - 0.5,
-                      CQT_MIDI_OFFSET + cqt.shape[0] - 0.5])
+              extent=[0, t[-1], CQT_FMIN_MIDI - half_bin,
+                      bin_to_midi(cqt.shape[0]) - half_bin])
     ax.plot(t, pitch, c="cyan", lw=2, label="aligned label")
     for x in t[labels["onset"] == 1]:
         ax.axvline(x, c="white", lw=0.5, alpha=0.6)
@@ -176,11 +200,14 @@ def main():
             print(f"[{index}/{len(feature_files)}] {stem}: no notes, skipped")
             continue
 
-        cqt = np.load(path)["cqt_log_magnitude"]
+        cqt = load_cqt(path)
         notes = all_notes[stem]
-        octave_shift, lag_s, align_score = estimate_alignment(
-            cqt_pitch_track(cqt), notes
-        )
+        # Prefer the saved pYIN track; older feature files only have the CQT.
+        hum_pitch = load_pitch_track(path)
+        pitch_source = "pyin"
+        if hum_pitch is None:
+            hum_pitch, pitch_source = cqt_pitch_track(cqt), "cqt"
+        octave_shift, lag_s, align_score, tuning = estimate_alignment(hum_pitch, notes)
         pitch, onset, offset = notes_to_frames(
             notes, cqt.shape[1], octave_shift, lag_s
         )
@@ -189,16 +216,19 @@ def main():
             args.labels_dir / f"{stem}.npz",
             pitch=pitch, onset=onset, offset=offset,
             octave_shift=octave_shift, lag_s=lag_s, align_score=align_score,
+            tuning=tuning,
         )
         rows.append({"clip": stem, "octave_shift": octave_shift,
-                     "lag_s": f"{lag_s:.2f}", "align_score": f"{align_score:.3f}"})
+                     "lag_s": f"{lag_s:.2f}", "align_score": f"{align_score:.3f}",
+                     "tuning": f"{tuning:+.2f}", "pitch_source": pitch_source})
         print(f"[{index}/{len(feature_files)}] {stem}: shift={octave_shift:+d} "
               f"lag={lag_s:.2f}s score={align_score:.2f}")
 
     with open(args.labels_dir.parent / ALIGNMENT_CSV.name, "w", newline="",
               encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=["clip", "octave_shift", "lag_s",
-                                               "align_score"])
+                                               "align_score", "tuning",
+                                               "pitch_source"])
         writer.writeheader()
         writer.writerows(rows)
 

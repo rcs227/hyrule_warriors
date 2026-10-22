@@ -1,0 +1,17 @@
+{
+  "epochs": 40,
+  "batch_size": 32,
+  "lr": 0.001,
+  "window": 300,
+  "min_align_score": 0.5,
+  "extra": [
+    "synthetic"
+  ],
+  "patience": 8,
+  "val_clips": 200,
+  "overfit": 0,
+  "init": null,
+  "workers": 2,
+  "name": "model",
+  "seed": 0
+}

@@ -2,3 +2,7 @@
 raw_data/MIR-QBSH/MIR-QBSH.zip
 
 .venv/
+__pycache__/
+.pytest_cache/
+checkpoints/
+logs/

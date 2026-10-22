@@ -12,3 +12,9 @@ matplotlib
 # Modelling and evaluation
 torch
 mir_eval
+
+# Live demo (microphone)
+sounddevice
+
+# Testing
+pytest
