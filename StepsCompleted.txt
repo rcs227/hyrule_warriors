@@ -1,0 +1,406 @@
+HYRULE WARRIORS - STEPS COMPLETED
+Humming-to-notes transcription project
+Last updated: October 22, 2026
+
+This file explains, in plain language, every step we have completed: what
+each step is, what it does, and why it matters for the project. Technical
+details (commands, file formats, exact settings) are in README.md.
+
+
+==============================================================================
+WHERE THE PROJECT STARTED
+==============================================================================
+
+The goal is a program that listens to someone humming and writes down the
+notes they hummed, like the humming feature in the new Ocarina of Time game.
+
+Before this work, the project had:
+  - scripts that download two collections of hummed and sung recordings
+    (HumTrans and MIR-QBSH) together with the "correct answers" for them
+    (MIDI files listing which notes were hummed and when),
+  - scripts that turn recordings into pictures of sound (spectrograms) that a
+    neural network can read,
+  - diagrams of the planned model and of the transcription process.
+
+There was no model yet, no way to measure how well any transcriber works, and
+no check that the "correct answers" actually matched the recordings.
+
+
+==============================================================================
+QUICK GLOSSARY
+==============================================================================
+
+  Label            The correct answer the model learns from: which note is
+                   being hummed at each moment.
+  Frame            A 10-millisecond slice of audio. One second = 100 frames.
+                   The model makes one prediction per frame.
+  CQT              The picture of sound the model reads. Time runs left to
+                   right, pitch runs bottom to top, brightness = loudness.
+  pYIN             A standard, non-AI method for tracking the pitch of a voice.
+  Onset            The moment a new note starts.
+  F1 score         A 0-to-1 score that combines "how many of the real notes
+                   did we find" with "how many of the notes we wrote down were
+                   real". 1.0 is perfect.
+  Note F1 (COnP)   Our main score: a note counts as correct if it starts
+                   within 50 ms of the real one AND has the right pitch.
+  Frame accuracy   The share of hummed frames where the predicted note is
+                   exactly right.
+  Training /       Recordings the model learns from / recordings used to
+  validation /     tune it while training / recordings kept aside for a final,
+  test sets        honest score.
+
+
+==============================================================================
+PART 1 - GETTING THE DATA RIGHT
+==============================================================================
+
+STEP 1: Set up a shared Python environment
+------------------------------------------
+What we did: Listed every software package the project needs in one file
+(requirements.txt) and set up a private "virtual environment" for them.
+
+What it does for the project: Anyone on the team can get a working setup with
+one install command, and everyone runs the same versions, so results are
+reproducible and "it works on my machine" problems are avoided.
+
+
+STEP 2: Checked whether the correct answers match the recordings
+----------------------------------------------------------------
+What we did: Tracked the hummed pitch in 30 recordings (3 from each of the 10
+HumTrans singers) and compared it with the MIDI answers.
+
+What we found: The answers were NOT lined up with the humming, in two ways:
+  - Octave: most male singers hummed one octave (12 notes) lower than the
+    answer says. A few hummed one octave higher, or two octaves lower. The
+    file names do not tell you which.
+  - Timing: every singer starts each note late, by a steady amount per
+    recording: usually 0.05-0.25 seconds, but up to about 1 second for two
+    singers.
+
+What it does for the project: This was the most important discovery. If we had
+trained on the answers as given, the model would have learned to name the
+wrong octave and to expect notes to start before they actually do, and it
+would have looked like the model was simply bad. Fixing the answers first
+gives the model a fair chance.
+
+
+STEP 3: Built corrected, frame-by-frame answers (build_labels.py)
+-----------------------------------------------------------------
+What we did: Wrote a program that, for every recording, tries every possible
+octave and delay, picks the combination where the humming best matches the
+answer, and applies it. It then turns the list of notes into one answer per
+10 ms frame (which note is sounding, and whether a note starts there).
+
+It also gives each recording an "alignment score": the share of hummed frames
+that match the corrected answer. This lets us spot and leave out recordings
+whose answers still do not fit.
+
+Improvements made along the way (each found by checking real examples):
+  - Octave and delay are now searched together. Searching the octave first
+    gave wrong octaves for singers with long delays.
+  - The hummed pitch now comes from pYIN instead of being read off the sound
+    picture. For deep voices the true pitch is faint, and the old method
+    picked the louder overtone one octave up, giving the wrong octave.
+  - The score now ignores a singer being consistently a little flat or sharp.
+    One singer (M02) hums almost half a note flat all the time; their notes
+    are still the right notes, but the old score rejected 94% of their
+    recordings.
+
+What it does for the project: Turns the dataset's answers into trustworthy
+training targets the model can learn from directly.
+
+
+STEP 4: Chose how strict to be about poorly matched recordings
+--------------------------------------------------------------
+What we did: Looked at the alignment scores of all 7,534 processed recordings
+and at plots of borderline cases, then set the cut-off at 0.5 (at least half
+of the hummed frames must match).
+
+Result: 92.7% of recordings are kept. Every singer keeps at least 84% of their
+recordings except M03 (46%), whose very deep voice is hard for pYIN to follow
+even though the answers we inspected looked mostly right.
+
+What it does for the project: Removes recordings with unreliable answers
+without throwing away good data or leaving any one singer out of training.
+
+
+STEP 5: Split the data into training, validation and test sets (splits.py)
+-------------------------------------------------------------------------
+What we did: Used the official split that comes with HumTrans: 13,080
+recordings for training, 765 for validation and 769 for testing. It is split
+by song, so no song appears in more than one set.
+
+What it does for the project: The final test is honest: the model is scored on
+melodies it has never heard. Using the official split also means our numbers
+can be compared with the published HumTrans results.
+
+
+STEP 6: Built a simple, non-AI transcriber to beat (baseline_pyin.py)
+--------------------------------------------------------------------
+What we did: Wrote a transcriber that uses no machine learning: it tracks
+pitch with pYIN, rounds it to the nearest note, and groups repeated frames
+into notes. We scored it on all 769 test recordings.
+
+Result: note F1 0.41, frame accuracy 69%.
+
+What it does for the project: Gives a clear target. A neural network is only
+worth its complexity if it beats this. It also proves the scoring code works.
+
+
+STEP 7: Shared scoring code (evaluation.py)
+-------------------------------------------
+What we did: Put the scoring in one place and used the standard music-research
+scoring library (mir_eval), so the baseline and the model are scored by
+exactly the same code against exactly the same corrected answers.
+
+What it does for the project: Comparisons between the baseline and the model
+(and between future versions of the model) are fair.
+
+
+==============================================================================
+PART 2 - MAKING THE WORK RELIABLE
+==============================================================================
+
+STEP 8: Automated tests (tests/ folder)
+---------------------------------------
+What we did: Wrote 51 small automated checks that run in a few seconds with
+no downloads. They use made-up inputs where we know the right answer, for
+example: "a note from 0.5 s to 1.5 s must become frames 50-149", "if we
+shift a melody by an octave and delay it 0.3 s, the alignment code must find
+exactly that", "no song may appear in two data sets", "decoding a perfect
+prediction must give back the original notes".
+
+What it does for the project: Mistakes in data-handling code do not crash;
+they quietly produce wrong answers that the model then learns from. The
+tests catch those mistakes immediately, and keep catching them whenever
+anyone changes the code later. They have already caught two real bugs: a
+silent recording producing fake notes, and a scoring loophole where a huge
+delay could get a perfect score. A third (a negative delay producing
+negative note times) showed up when running the baseline and now has its
+own test too.
+
+
+STEP 9: Saved the work in version control
+-----------------------------------------
+What we did: Committed each finished stage to git on a separate branch
+(model-pipeline), leaving the main branch untouched. Large generated files
+(audio features, model checkpoints) are kept out of git.
+
+What it does for the project: Nothing can be lost, every change can be
+reviewed or undone, and teammates can review the branch before it is merged.
+
+
+STEP 10: Fixed and sped up the audio-processing script
+------------------------------------------------------
+What we did:
+  - Put all the sound-picture settings in one shared file (features.py), so
+    every script makes identical pictures and an old, mismatched file is
+    rejected instead of silently confusing the model.
+  - Made the sound pictures 3 times finer in pitch (3 steps per note instead
+    of 1), because hummed notes often fall between piano keys.
+  - Removed the old 13 MB size limit (which stopped after a few dozen
+    recordings), let you choose which data sets and how many training
+    recordings to process, processed 6 recordings at once, and made the
+    script resumable after an interruption.
+  - Saved the pYIN pitch track alongside each sound picture (used for
+    aligning the answers, see Step 3).
+
+Result: 7,534 recordings processed (all validation and test recordings plus
+6,000 randomly chosen training recordings), 3.2 GB. We did not process all
+13,080 training recordings because of limited disk space at the time; the
+script can add the rest with one command.
+
+What it does for the project: Turns a script that only worked on a handful of
+files into one that can prepare the whole dataset.
+
+
+==============================================================================
+PART 3 - THE MODEL
+==============================================================================
+
+STEP 11: The data loader (dataset.py)
+-------------------------------------
+What we did: Wrote the piece that feeds the model during training. It cuts
+each recording into random 3-second pieces and pairs every frame of sound
+with its answer. It knows 50 possible answers per frame: silence, or one of
+49 notes from low C2 to high C6.
+
+What it does for the project: Connects the prepared data to the model. Random
+pieces mean the model sees slightly different material every round, which
+helps it learn general patterns rather than memorizing recordings.
+
+
+STEP 12: The model (model.py)
+-----------------------------
+What we did: Built the model from our training diagram:
+  1. A convolutional network (CNN) looks at small patches of the sound
+     picture and learns what a hummed note looks like (a stack of evenly
+     spaced harmonics).
+  2. A bidirectional LSTM reads the whole recording forwards and backwards,
+     so its decision about each moment can use what came before and after.
+  3. Two outputs per frame: which note is sounding (or silence), and how
+     likely it is that a new note starts there.
+About 760,000 adjustable numbers in total, small enough to train on a laptop.
+
+Sanity check: we let it train on only 50 recordings and score itself on those
+same 50. It reached note F1 0.90 and frame accuracy 95% within 10 rounds.
+That proves the whole pipeline is wired correctly: if it could not even
+memorize 50 recordings, something would be broken.
+
+What it does for the project: This is the core of the project: the part that
+actually learns to hear notes.
+
+
+STEP 13: Turning predictions into notes and MIDI files (decoding.py)
+-------------------------------------------------------------------
+What we did: Wrote the step that turns the model's frame-by-frame guesses into
+a clean list of notes: a note starts where the pitch changes or where the
+model is confident a new note begins on the same pitch (so repeated notes
+are kept separate), and very short blips are thrown away. It can also save
+the notes as a MIDI file that any music program can play or show as sheet
+music.
+
+What it does for the project: This is the actual end product: a list of notes
+and a MIDI file, rather than a grid of probabilities.
+
+
+STEP 14: Training and the final test (train.py, evaluate_model.py)
+------------------------------------------------------------------
+What we did: Trained the model on 7,546 recordings: 5,546 real HumTrans
+hums (the processed training recordings that passed the alignment check)
+plus 2,000 synthetic hums (Step 15). Training ran on the laptop's built-in
+graphics chip for 40 rounds ("epochs"), about 1.5 minutes each.
+
+  - In each epoch the model sees one random 3-second piece of every
+    training recording, guesses the notes, compares its guesses with the
+    correct answers, and adjusts itself slightly to be less wrong.
+  - After each epoch it transcribes 200 validation recordings it never
+    trains on and is scored the same way as the baseline. The best version
+    is saved, so a bad round can never overwrite a good one.
+
+Validation note F1 by epoch: 0.66 after epoch 1, 0.77 after 10, 0.79 after
+20, 0.80 after 30, best 0.805 at epoch 36. Most of the learning happened in
+the first 10 epochs; after about 30 it had levelled off.
+
+The final test: we then scored the best saved version once on the 769 test
+recordings, which were never used for training or for choosing the model:
+
+                                      Our model    Baseline (Step 6)
+  Note F1 (start + right pitch)         0.75          0.41
+  Note-start F1 (start only)            0.79          0.58
+  Note F1 including the note end        0.66          0.27
+  Frame accuracy                        87%           69%
+
+The model beats the baseline on 99% of the test recordings.
+
+By singer (note F1, model vs baseline):
+  F01 0.82 vs 0.50   F02 0.81 vs 0.54   F03 0.85 vs 0.61   F04 0.92 vs 0.55
+  F05 0.81 vs 0.44   M01 0.80 vs 0.41   M02 0.57 vs 0.23   M03 0.45 vs 0.16
+  M04 0.73 vs 0.35   M05 0.69 vs 0.34
+The two hardest singers are the same two the alignment step struggled with:
+M02 (hums about half a note flat) and M03 (very deep voice). The model still
+roughly doubles to triples the baseline's score on them, but they are the
+clearest place to improve.
+
+What it does for the project: This answers the project's main question: yes,
+a neural network transcribes humming far better than the standard non-AI
+method. The saved model (checkpoints/model_best.pt) is what the
+transcription demo uses.
+
+
+==============================================================================
+PART 4 - MORE DATA AND THE DEMO
+==============================================================================
+
+STEP 15: Synthetic hums (generate_synthetic.py)
+-----------------------------------------------
+What we did: Built on the team's hum-generator notebook to create 2,000
+computer-generated hums with random melodies. They imitate real humming:
+vibrato, slight pitch wander, slides between notes, low and high voices
+(sometimes with a faint fundamental, like the hardest real recordings),
+rests, repeated notes, background noise and different loudness levels.
+
+What it does for the project: Because we wrote the melodies ourselves, their
+answers are perfectly correct, unlike the real data, which needed fixing.
+They give the model extra clean examples to learn from, and a test checks
+that our alignment code finds no shift or delay on them, which confirms the
+whole labelling process end to end.
+
+
+STEP 16: MIR-QBSH, the second dataset (build_MIR_QBSH_labels.py)
+----------------------------------------------------------------
+What we did: Updated the MIR-QBSH audio script to use the shared settings and
+wrote a new script that builds answers from the dataset's pitch files (.pv),
+because its MIDI files are the original songs rather than what each person
+actually sang. The script also compares every pitch file with pYIN and
+reports how well they agree, so we can confirm the pitch files really match
+the recordings.
+
+Status: The code is written and tested, but NOT YET RUN. The public download
+link for MIR-QBSH no longer works and we could not find a copy online. A
+teammate has the file (the existing midi_notes.csv was made from it). Once
+it is copied into raw_data/MIR-QBSH/, two commands add it to training
+(see README.md).
+
+What it does for the project: More singers and recording conditions. HumTrans
+has only 10 singers, which limits how well the model handles new voices.
+
+
+STEP 17: The transcription demo (transcribe.py)
+-----------------------------------------------
+What we did: Wrote the program from our transcription diagram. Give it a
+recording, or let it record from the microphone, and it trims the silence,
+makes the sound picture, runs the model, prints the notes (e.g.
+"0.52-1.01 s  C4") and saves a MIDI file.
+
+What it does for the project: This is the user-facing goal: hum into the
+microphone, get notes back.
+
+Limitation: because the model reads the recording in both directions, the
+notes appear when the recording ends, not while you hum. Truly live output
+would need a model that only looks backwards in time.
+
+
+==============================================================================
+DOCUMENTATION
+==============================================================================
+
+README.md was updated at every step. It now has a project status checklist,
+the order to run the scripts in, an explanation of every script, the
+alignment findings and all results. Plots used in the README are in the
+diagrams/ folder.
+
+
+==============================================================================
+WHAT IS LEFT / IDEAS FOR NEXT STEPS
+==============================================================================
+
+1. Try it on our own voices. Record each team member humming tunes whose
+   notes we know, and run them through transcribe.py. HumTrans was recorded
+   with different microphones and rooms, so accuracy on a laptop microphone
+   is probably lower than the test score, and we have not measured it yet.
+   Our voices are also new to the model (it learned from only 10 singers).
+
+2. Add MIR-QBSH. Copy the zip into raw_data/MIR-QBSH/, run
+   collect_MIR_QBSH_wav.py and build_MIR_QBSH_labels.py, check the printed
+   agreement between the pitch files and the recordings, then retrain with
+   "python train.py --extra synthetic mir_qbsh". More voices should help most
+   with the singers the model finds hardest.
+
+3. Use the rest of HumTrans. We processed 6,000 of the 13,080 training
+   recordings because of limited disk space at the time (there is now more
+   free space). One command processes the rest (see README.md).
+
+4. Improve the hardest singers (M02, M03). Possible approaches: more deep-
+   voice synthetic hums, and checking more M03 recordings by eye to decide
+   whether the alignment cut-off is too strict for that singer.
+
+5. Check how much the synthetic hums helped by training once without them
+   and comparing. We have not run that comparison yet.
+
+6. Live, while-you-hum output. The current model needs the whole recording.
+   A version that only looks backwards in time (a one-direction LSTM) could
+   show notes as you hum, probably at some cost in accuracy.
+
+7. Merge the work. Everything is on the "model-pipeline" branch in git;
+   the team should review it and merge it into main.
