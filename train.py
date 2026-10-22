@@ -104,6 +104,8 @@ def main():
     parser.add_argument("--overfit", type=int, default=0,
                         help="train AND validate on this many train clips")
     parser.add_argument("--init", type=Path, help="start from a checkpoint")
+    parser.add_argument("--workers", type=int, default=2,
+                        help="data-loading processes (0 = load in the main process)")
     parser.add_argument("--name", default="model")
     parser.add_argument("--seed", type=int, default=0)
     args = parser.parse_args()
@@ -134,7 +136,8 @@ def main():
     repeats = max(1, 512 // len(train_set)) if args.overfit else 1
     loader = DataLoader(torch.utils.data.ConcatDataset([train_set] * repeats),
                         batch_size=args.batch_size, shuffle=True,
-                        num_workers=2, persistent_workers=True)
+                        num_workers=args.workers,
+                        persistent_workers=args.workers > 0)
 
     model = HumTranscriber().to(device)
     if args.init:

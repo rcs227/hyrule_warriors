@@ -5,3 +5,4 @@ raw_data/MIR-QBSH/MIR-QBSH.zip
 __pycache__/
 .pytest_cache/
 checkpoints/
+logs/
