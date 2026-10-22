@@ -21,7 +21,8 @@ import numpy as np
 from scipy.ndimage import median_filter
 
 from build_labels import FEATURES_DIR, LABELS_DIR, load_notes
-from evaluation import METRICS, evaluate_clip, reference_notes, summarize
+from evaluation import (METRICS, MIN_ALIGN_SCORE, evaluate_clip, reference_notes,
+                        summarize)
 from features import FRAME_S, load_pitch_track
 from splits import get_split
 
@@ -90,7 +91,7 @@ def main():
         json.dumps(summary, indent=2))
 
     print(f"{args.split}: {summary['n_clips']} clips "
-          f"({summary['n_good']} with align_score >= 0.6)")
+          f"({summary['n_good']} with align_score >= {MIN_ALIGN_SCORE})")
     for m in METRICS:
         print(f"  {m:11s} {summary['all'][m]:.3f}  ({summary['good'][m]:.3f})")
 

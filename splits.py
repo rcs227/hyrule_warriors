@@ -10,7 +10,7 @@ dropped with min_align_score.
 
 Usage:
     python splits.py                     # print clip counts per split
-    python splits.py --min-align-score 0.6
+    python splits.py --min-align-score 0.5
 """
 import argparse
 import csv

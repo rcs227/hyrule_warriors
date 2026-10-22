@@ -13,12 +13,19 @@ from features import FRAME_S
 ONSET_TOLERANCE_S = 0.05
 PITCH_TOLERANCE_CENTS = 50
 METRICS = ["COn_f1", "COnP_f1", "COnPOff_f1", "frame_acc"]
+MIN_ALIGN_SCORE = 0.5     # training/evaluation cut-off, see README
 
 
 def reference_notes(notes, octave_shift, lag_s):
-    """Aligned reference as (intervals in seconds, MIDI pitches)."""
-    intervals = np.array([(s + lag_s, e + lag_s) for s, e, _ in notes]).reshape(-1, 2)
-    pitches = np.array([p + octave_shift for _, _, p in notes])
+    """Aligned reference as (intervals in seconds, MIDI pitches).
+
+    A negative lag can push the first note before the start of the clip;
+    such notes are cut at 0 s, or dropped if they end before it.
+    """
+    kept = [(max(s + lag_s, 0.0), e + lag_s, p + octave_shift)
+            for s, e, p in notes if e + lag_s > 0]
+    intervals = np.array([(s, e) for s, e, _ in kept], dtype=float).reshape(-1, 2)
+    pitches = np.array([p for _, _, p in kept])
     return intervals, pitches
 
 
@@ -65,7 +72,7 @@ def evaluate_clip(ref_intervals, ref_pitches, ref_frames, est_intervals, est_pit
     return row
 
 
-def summarize(rows, min_align_score=0.6):
+def summarize(rows, min_align_score=MIN_ALIGN_SCORE):
     """Mean of each metric over all clips and over well-aligned clips."""
     good = [r for r in rows if r["align_score"] >= min_align_score]
     return {

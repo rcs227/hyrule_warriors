@@ -96,8 +96,11 @@ def notes_to_frames(notes, n_frames, octave_shift=0, lag_s=0.0):
 def estimate_alignment(hum_pitch, notes):
     """Find the octave shift and lag that best match the hum to the notes.
 
-    The score is the fraction of frames (hummed and labelled) where the hum
-    is within half a semitone of the shifted label.
+    Returns (octave_shift, lag_s, align_score, tuning). The score is the
+    fraction of hummed frames within half a semitone of the shifted label,
+    after removing the singer's constant tuning offset (e.g. someone who
+    hums a third of a semitone flat throughout). Without that correction
+    the score would punish out-of-tune singers whose labels are correct.
     """
     n = len(hum_pitch)
     ref, _, _ = notes_to_frames(notes, n)
@@ -108,24 +111,35 @@ def estimate_alignment(hum_pitch, notes):
     total = min(np.count_nonzero(~np.isnan(hum_pitch)),
                 np.count_nonzero(~np.isnan(ref)))
     if total == 0:
-        return 0, 0.0, 0.0
+        return 0, 0.0, 0.0, 0.0
 
-    def score(octave_shift, lag_frames):
+    def differences(octave_shift, lag_frames):
+        """Hum minus shifted label, on frames where both exist."""
         shifted = np.full(n, np.nan)
         if lag_frames >= 0:
             shifted[:n - lag_frames] = hum_pitch[lag_frames:]
         else:
             shifted[-lag_frames:] = hum_pitch[:lag_frames]
         ok = ~np.isnan(shifted) & ~np.isnan(ref)
-        return float(np.sum(np.abs(shifted[ok] - octave_shift - ref[ok]) < 0.5)) / total
+        return shifted[ok] - octave_shift - ref[ok]
+
+    def score(octave_shift, lag_frames, tuning=0.0):
+        d = differences(octave_shift, lag_frames)
+        return float(np.sum(np.abs(d - tuning) < 0.5)) / total
 
     # Octave and lag are searched together: with a long lag, comparing the
     # unshifted hum to the labels says little about the octave.
     lags = range(int(LAG_RANGE_S[0] / FRAME_S), int(LAG_RANGE_S[1] / FRAME_S) + 1)
-    best = max(((score(shift, lag), -abs(shift), shift, lag)
-                for shift in OCTAVE_SHIFTS for lag in lags))
-    best_score, _, octave_shift, lag_frames = best
-    return octave_shift, lag_frames * FRAME_S, best_score
+    _, _, octave_shift, lag_frames = max(
+        (score(shift, lag), -abs(shift), shift, lag)
+        for shift in OCTAVE_SHIFTS for lag in lags)
+
+    # Measure the singer's tuning from frames within a semitone of the label.
+    d = differences(octave_shift, lag_frames)
+    near = np.abs(d) < 1.0
+    tuning = float(np.median(d[near])) if near.any() else 0.0
+    return (octave_shift, lag_frames * FRAME_S,
+            score(octave_shift, lag_frames, tuning), tuning)
 
 
 def plot_clip(stem, labels_path, features_path, out_path):
@@ -193,7 +207,7 @@ def main():
         pitch_source = "pyin"
         if hum_pitch is None:
             hum_pitch, pitch_source = cqt_pitch_track(cqt), "cqt"
-        octave_shift, lag_s, align_score = estimate_alignment(hum_pitch, notes)
+        octave_shift, lag_s, align_score, tuning = estimate_alignment(hum_pitch, notes)
         pitch, onset, offset = notes_to_frames(
             notes, cqt.shape[1], octave_shift, lag_s
         )
@@ -202,17 +216,19 @@ def main():
             args.labels_dir / f"{stem}.npz",
             pitch=pitch, onset=onset, offset=offset,
             octave_shift=octave_shift, lag_s=lag_s, align_score=align_score,
+            tuning=tuning,
         )
         rows.append({"clip": stem, "octave_shift": octave_shift,
                      "lag_s": f"{lag_s:.2f}", "align_score": f"{align_score:.3f}",
-                     "pitch_source": pitch_source})
+                     "tuning": f"{tuning:+.2f}", "pitch_source": pitch_source})
         print(f"[{index}/{len(feature_files)}] {stem}: shift={octave_shift:+d} "
               f"lag={lag_s:.2f}s score={align_score:.2f}")
 
     with open(args.labels_dir.parent / ALIGNMENT_CSV.name, "w", newline="",
               encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=["clip", "octave_shift", "lag_s",
-                                               "align_score", "pitch_source"])
+                                               "align_score", "tuning",
+                                               "pitch_source"])
         writer.writeheader()
         writer.writerows(rows)
 

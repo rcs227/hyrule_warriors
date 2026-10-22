@@ -23,7 +23,8 @@ from torch.utils.data import DataLoader
 from build_labels import FEATURES_DIR, LABELS_DIR, load_notes
 from dataset import HumDataset
 from decoding import decode
-from evaluation import METRICS, evaluate_clip, reference_notes, summarize
+from evaluation import (METRICS, MIN_ALIGN_SCORE, evaluate_clip, reference_notes,
+                        summarize)
 from model import HumTranscriber, compute_loss
 from splits import get_split
 
@@ -95,7 +96,7 @@ def main():
     parser.add_argument("--batch-size", type=int, default=32)
     parser.add_argument("--lr", type=float, default=1e-3)
     parser.add_argument("--window", type=int, default=300)
-    parser.add_argument("--min-align-score", type=float, default=0.6)
+    parser.add_argument("--min-align-score", type=float, default=MIN_ALIGN_SCORE)
     parser.add_argument("--extra", nargs="*", default=[], choices=list(EXTRA_SOURCES))
     parser.add_argument("--patience", type=int, default=8,
                         help="stop after this many epochs without improvement")

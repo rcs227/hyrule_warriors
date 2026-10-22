@@ -19,5 +19,5 @@ def test_audio_matches_its_labels():
     notes, clip_s = random_melody(rng)
     audio = synthesize(notes, clip_s, rng)
     assert len(audio) == int(clip_s * SAMPLE_RATE) and np.isfinite(audio).all()
-    shift, lag, score = estimate_alignment(cqt_pitch_track(compute_cqt(audio)), notes)
+    shift, lag, score, _ = estimate_alignment(cqt_pitch_track(compute_cqt(audio)), notes)
     assert shift == 0 and abs(lag) <= 0.03 and score > 0.7

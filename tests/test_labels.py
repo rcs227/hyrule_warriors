@@ -39,7 +39,7 @@ def test_alignment_recovers_known_shift_and_lag(shift, lag_s):
     # A fake "hummed" pitch track: the melody moved by shift and lag_s.
     hum, _, _ = notes_to_frames(MELODY, 400, octave_shift=shift, lag_s=lag_s)
     hum = np.where(hum > 0, hum, np.nan).astype(float)
-    est_shift, est_lag, score = estimate_alignment(hum, MELODY)
+    est_shift, est_lag, score, _ = estimate_alignment(hum, MELODY)
     assert est_shift == shift
     assert est_lag == pytest.approx(lag_s, abs=0.011)
     assert score > 0.95
@@ -68,5 +68,16 @@ def test_cqt_pitch_track_finds_the_hummed_note(midi):
 def test_cqt_pitch_track_aligns_to_the_true_melody():
     notes = [(0.5, 1.0, 55), (1.0, 1.5, 57), (1.5, 2.0, 60), (2.0, 2.5, 62)]
     track = cqt_pitch_track(compute_cqt(_hum([55, 57, 60, 62])))
-    shift, lag, score = estimate_alignment(track, notes)
+    shift, lag, score, _ = estimate_alignment(track, notes)
     assert shift == 0 and abs(lag) <= 0.05 and score > 0.8
+
+
+def test_out_of_tune_singer_still_scores_well():
+    # Someone humming the right notes 0.45 semitone flat throughout: the
+    # labels are correct, so the score should stay high.
+    hum, _, _ = notes_to_frames(MELODY, 400, lag_s=0.2)
+    hum = np.where(hum > 0, hum - 0.45, np.nan).astype(float)
+    shift, lag, score, tuning = estimate_alignment(hum, MELODY)
+    assert shift == 0 and lag == pytest.approx(0.2, abs=0.011)
+    assert tuning == pytest.approx(-0.45, abs=0.01)
+    assert score > 0.95

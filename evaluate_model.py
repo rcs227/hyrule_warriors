@@ -12,7 +12,7 @@ import json
 from pathlib import Path
 
 from build_labels import LABELS_DIR, load_notes
-from evaluation import METRICS, summarize
+from evaluation import METRICS, MIN_ALIGN_SCORE, summarize
 from splits import get_split
 from train import evaluate_stems, pick_device
 from transcribe import load_model
@@ -48,7 +48,7 @@ def main():
     baseline_path = RESULTS_DIR / f"baseline_pyin_{args.split}.json"
     baseline = json.loads(baseline_path.read_text()) if baseline_path.exists() else None
     print(f"{args.split}: {summary['n_clips']} clips "
-          f"({summary['n_good']} with align_score >= 0.6)\n")
+          f"({summary['n_good']} with align_score >= {MIN_ALIGN_SCORE})\n")
     print(f"{'metric':12s} {'model':>8s} {'baseline':>9s}   (well-aligned clips only)")
     for m in METRICS:
         b = f"{baseline['all'][m]:9.3f}" if baseline else "        -"
